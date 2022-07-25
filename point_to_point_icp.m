@@ -1,0 +1,181 @@
+%% Initialization
+clear all;
+
+addpath 'C:\Registration_study\datasets';
+dataset_generation_3d;
+
+input_ptcloud_type = 2; % 1: without noise / 2: with noise
+
+% without noise data
+if(input_ptcloud_type == 1)
+    fixed_ptcloud = arr_fixed(1);
+    target_ptcloud = moving_tmp(1);
+
+elseif(input_ptcloud_type == 2)
+    fixed_ptcloud = arr_fixed(1);
+    target_ptcloud = moving_tmp_noise(1);
+
+else
+    fixed_ptcloud = arr_fixed(1);
+    target_ptcloud = moving_tmp(1);
+
+end
+
+close all;
+
+figure(1);
+title("registration before");
+pcshow(fixed_ptcloud);
+hold on;
+
+pcshow(target_ptcloud);
+hold off;
+
+
+%% Iterative step
+error_threshold = 0.01;
+iter_error = 10000000;
+
+fprintf('02. ICP \n');
+
+tic;
+while (iter_error > error_threshold)
+    %% Get correspondences - Point Subset 
+    correspondence_type = 3;
+    
+    % all points
+    if(correspondence_type == 1)
+        fixed_ptcloud_filtered = fixed_ptcloud;
+        target_ptcloud_filtered = target_ptcloud;
+    
+    % uniform sub-sampling
+    elseif(correspondence_type == 2)
+        gridStep = 0.15;
+        fixed_ptcloud_filtered = pcdownsample(fixed_ptcloud,'gridAverage',gridStep);
+        target_ptcloud_filtered = pcdownsample(target_ptcloud,'gridAverage',gridStep);
+    
+    % random sampling
+    elseif(correspondence_type == 3)
+        percentage = 0.5;
+        fixed_ptcloud_filtered = pcdownsample(fixed_ptcloud,'random',percentage);
+        target_ptcloud_filtered = pcdownsample(target_ptcloud,'random',percentage);
+    
+    % feature-based sampling
+    elseif(correspondence_type == 4)
+        % TBD
+    
+    elseif(correspondence_type == 5)
+    % normal space sampling
+        percentage = 0.8;
+        fixed_normals = pcnormals(fixed_ptcloud);
+        target_normals = pcnormals(target_ptcloud);
+    
+        fixed_ptcloud_filtered = pointCloud(fixed_normals);
+        target_ptcloud_filtered = pointCloud(target_normals);
+    end
+    
+    fixed_ptcloud_filtered_arr = fixed_ptcloud_filtered.Location;
+    target_ptcloud_filtered_arr = target_ptcloud_filtered.Location;
+    
+    %% Get correspondences - Data association
+    
+    association_type = 1;
+    
+    % save target-fixed point pair as [fixed target]
+    correspondence_pair = zeros(length(target_ptcloud_filtered_arr), 6);
+
+    if(association_type == 1)
+        % closest point - KNN
+        for target_idx = 1:length(target_ptcloud_filtered_arr)
+    
+            target_point = target_ptcloud_filtered_arr(target_idx, :);
+            [indice,dist] = findNearestNeighbors(fixed_ptcloud_filtered,target_point,1);
+    
+            nearest_fixed_point = fixed_ptcloud_filtered_arr(indice, :);
+    
+            correspondence_pair(target_idx, 1:3) = nearest_fixed_point;
+            correspondence_pair(target_idx, 4:6) = target_point;
+    
+        end
+
+    elseif(association_type == 3)
+        % normal shooting
+    
+    end
+
+    %% Get center of mass
+    correspondence_pair_fixed = correspondence_pair(:, 1:3);
+    correspondence_pair_target = correspondence_pair(:, 4:6);
+    
+    fixed_center_mass = sum(correspondence_pair_fixed)./length(correspondence_pair_fixed);
+    target_center_mass = sum(correspondence_pair_target)./length(correspondence_pair_target);
+    
+    %% Generate subtract center of mass point subsets
+    correspondence_pair_fixed_center_of_mass = correspondence_pair_fixed - fixed_center_mass;
+    correspondence_pair_target_center_of_mass = correspondence_pair_target - target_center_mass;
+    
+    %% SVD
+    svd_w = 0;
+    
+    for idx = 1:length(correspondence_pair_fixed_center_of_mass)
+        fixed = correspondence_pair_fixed_center_of_mass(idx, :)';
+        target = correspondence_pair_target_center_of_mass(idx, :)';
+    
+        svd_w = svd_w + fixed * target';
+    end
+    
+    [svd_u, svd_s, svd_v] = svd(svd_w);
+    
+    icp_rotation = svd_u * svd_v';
+    icp_translation = fixed_center_mass' - icp_rotation * target_center_mass';
+    
+    %% Error function
+    error = 0;
+    
+    for idx = 1:length(correspondence_pair_fixed_center_of_mass)
+        fixed = correspondence_pair_fixed_center_of_mass(idx, :)';
+        target = correspondence_pair_target_center_of_mass(idx, :)';
+    
+        error = error + norm(fixed)^2 + norm(target)^2;
+    end
+    
+    error = error - 2*(svd_s(1,1) + svd_s(2,2) + svd_s(3,3));
+    error = error/length(correspondence_pair_fixed_center_of_mass);
+    
+    if(error > iter_error)
+        break;
+    else
+        iter_error = error;
+        fprintf('icp error: %f \n', iter_error);
+    end
+    
+    %% Check registration with visualization
+    
+    registration_tform = rigid3d(icp_rotation, icp_translation');
+    registrated_target_ptcloud = pctransform(target_ptcloud, registration_tform);   
+
+    target_ptcloud = registrated_target_ptcloud;
+end
+
+matlab_icp_tform = pcregistericp(target_ptcloud,fixed_ptcloud);
+matlab_registrated_target_ptcloud = pctransform(target_ptcloud, matlab_icp_tform);   
+
+elapsed_time = toc;
+
+fprintf('final error: %f \n', iter_error);
+fprintf('elapsed time: %f \n', elapsed_time);
+fprintf('-------------------------\n');
+
+figure(2);
+title("registration results");
+pcshow(fixed_ptcloud);
+hold on;
+
+pcshow(target_ptcloud);
+
+figure(3);
+title("matlab results");
+pcshow(fixed_ptcloud);
+hold on;
+
+pcshow(matlab_registrated_target_ptcloud);
